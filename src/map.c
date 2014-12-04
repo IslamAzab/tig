@@ -59,4 +59,27 @@ string_map_clear(struct string_map *map)
 		htab_empty(map->htab);
 }
 
+struct string_map_iterator {
+	string_map_iterator_fn fn;
+	void *data;
+};
+
+static int
+string_map_iterate(void **slot, void *data)
+{
+	struct string_map_iterator *iterator = data;
+
+	return iterator->fn(iterator->data, *slot);
+}
+
+void
+string_map_foreach(struct string_map *map, string_map_iterator_fn fn, void *data)
+{
+	if (map->htab) {
+		struct string_map_iterator iterator = { fn, data };
+
+		htab_traverse_noresize(map->htab, string_map_iterate, &iterator);
+	}
+}
+
 /* vim: set ts=8 sw=8 noexpandtab: */

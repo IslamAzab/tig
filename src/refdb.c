@@ -20,11 +20,7 @@
 #include "tig/repo.h"
 #include "tig/refdb.h"
 
-static struct ref **refs = NULL;
-static size_t refs_size = 0;
 static struct ref *refs_head = NULL;
-
-DEFINE_ALLOCATOR(realloc_refs, struct ref *, 256)
 
 static const char *
 refs_by_id_key(const void *ref_)
@@ -42,14 +38,21 @@ refs_by_id_hash(const void *ref)
 
 static struct string_map refs_by_id = { refs_by_id_hash, refs_by_id_key };
 
-static int
-compare_refs(const void *ref1_, const void *ref2_)
+static const char *
+refs_by_name_key(const void *ref_)
 {
-	const struct ref *ref1 = *(const struct ref **)ref1_;
-	const struct ref *ref2 = *(const struct ref **)ref2_;
+	const struct ref *ref = (const struct ref *)ref_;
 
-	return ref_compare(ref1, ref2);
+	return ref->name;
 }
+
+static string_map_key_t
+refs_by_name_hash(const void *ref)
+{
+	return string_map_hash_helper(refs_by_name_key(ref));
+}
+
+static struct string_map refs_by_name = { refs_by_name_hash, refs_by_name_key };
 
 int
 ref_compare(const struct ref *ref1, const struct ref *ref2)
@@ -74,11 +77,7 @@ ref_canonical_compare(const struct ref *ref1, const struct ref *ref2)
 void
 foreach_ref(bool (*visitor)(void *data, const struct ref *ref), void *data)
 {
-	size_t i;
-
-	for (i = 0; i < refs_size; i++)
-		if (refs[i]->id[0] && !visitor(data, refs[i]))
-			break;
+	string_map_foreach(&refs_by_name, (string_map_iterator_fn) visitor, data);
 }
 
 const struct ref *
@@ -118,7 +117,7 @@ add_to_refs(const char *id, size_t idlen, char *name, size_t namelen, struct ref
 	struct ref *ref = NULL;
 	enum reference_type type = REFERENCE_BRANCH;
 	void **ref_lists_slot;
-	int pos;
+	void **ref_slot;
 
 	if (!prefixcmp(name, "refs/tags/")) {
 		type = REFERENCE_TAG;
@@ -165,24 +164,17 @@ add_to_refs(const char *id, size_t idlen, char *name, size_t namelen, struct ref
 	 * previous SHA1 with the resolved commit id; relies on the fact
 	 * git-ls-remote lists the commit id of an annotated tag right
 	 * before the commit id it points to. */
-	for (pos = 0; pos < refs_size; pos++) {
-		int cmp = type == REFERENCE_REPLACE
-			? strcmp(id, refs[pos]->id) : strcmp(name, refs[pos]->name);
+	ref_slot = string_map_put(&refs_by_name, name);
+	if (!ref_slot)
+		return ERR;
 
-		if (!cmp) {
-			ref = refs[pos];
-			break;
-		}
-	}
-
+	ref = *ref_slot;
 	if (!ref) {
-		if (!realloc_refs(&refs, refs_size, 1))
-			return ERR;
 		ref = calloc(1, sizeof(*ref) + namelen);
 		if (!ref)
 			return ERR;
-		refs[refs_size++] = ref;
 		strncpy(ref->name, name, namelen);
+		*ref_slot = ref;
 	}
 
 	if (strncmp(ref->id, id, idlen))
@@ -212,6 +204,7 @@ add_to_refs(const char *id, size_t idlen, char *name, size_t namelen, struct ref
 		if (head == ref || ref_compare(ref, head) <= 0)
 			break;
 
+	io_trace(" => Swapping %s before %s\n", head->name, ref->name);
 		if (*ref_lists_slot == ref)
 			*ref_lists_slot = head;
 		ref->next = head->next;
@@ -227,6 +220,30 @@ read_ref(char *id, size_t idlen, char *name, size_t namelen, void *data)
 	return add_to_refs(id, idlen, name, namelen, data);
 }
 
+static bool
+invalidate_refs(void *data, void *ref_)
+{
+	struct ref *ref = ref_;
+
+	ref->valid = 0;
+	ref->next = NULL;
+	return TRUE;
+}
+
+static bool
+cleanup_refs(void *data, void *ref_)
+{
+	struct ref_opt *opt = data;
+	struct ref *ref = ref_;
+
+	if (!ref->valid) {
+		ref->id[0] = 0;
+		opt->changed |= WATCH_REFS;
+	}
+
+	return TRUE;
+}
+
 static int
 reload_refs(bool force)
 {
@@ -236,7 +253,6 @@ reload_refs(bool force)
 	static bool init = FALSE;
 	struct ref_opt opt = { repo.remote, repo.head, WATCH_NONE };
 	struct repo_info old_repo = repo;
-	size_t i;
 
 	if (!init) {
 		if (!argv_from_env(ls_remote_argv, "TIG_LS_REMOTE"))
@@ -254,26 +270,16 @@ reload_refs(bool force)
 		opt.changed |= WATCH_HEAD;
 
 	refs_head = NULL;
-	for (i = 0; i < refs_size; i++) {
-		refs[i]->valid = 0;
-		refs[i]->next = NULL;
-	}
-
 	string_map_clear(&refs_by_id);
+	string_map_foreach(&refs_by_name, invalidate_refs, NULL);
 
 	if (io_run_load(ls_remote_argv, "\t", read_ref, &opt) == ERR)
 		return ERR;
 
-	for (i = 0; i < refs_size; i++)
-		if (!refs[i]->valid) {
-			refs[i]->id[0] = 0;
-			opt.changed |= WATCH_REFS;
-		}
-
+	string_map_foreach(&refs_by_name, cleanup_refs, &opt);
 
 	if (opt.changed)
 		watch_apply(NULL, opt.changed);
-	qsort(refs, refs_size, sizeof(*refs), compare_refs);
 
 	return OK;
 }

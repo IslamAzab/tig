@@ -129,6 +129,16 @@ refs_open_visitor(void *data, const struct ref *ref)
 
 	reference->ref = ref;
 	view_column_info_update(view, line);
+	resort_view(view);
+
+	{
+		size_t i, lineno = 1;
+
+		for (i = 0; i < view->lines; i++) {
+			if (view->line[i].lineno)
+				view->line[i].lineno = lineno++;
+		}
+	}
 
 	return TRUE;
 }
@@ -156,6 +166,8 @@ refs_open(struct view *view, enum open_flags flags)
 		return FALSE;
 	}
 
+	if (!view->lines)
+		view->sort.current = get_view_column(view, VIEW_COLUMN_REF);
 	refs_open_visitor(view, refs_all);
 	foreach_ref(refs_open_visitor, view);
 

@@ -24,6 +24,7 @@
 typedef unsigned int string_map_key_t;
 typedef string_map_key_t (*string_map_hash_fn)(const void *value);
 typedef const char *(*string_map_key_fn)(const void *value);
+typedef bool (*string_map_iterator_fn)(void *data, void *value);
 
 struct string_map {
 	string_map_hash_fn hash_fn;
@@ -36,6 +37,7 @@ extern string_map_hash_fn string_map_hash_helper;
 void *string_map_get(struct string_map *map, const char *key);
 void **string_map_put(struct string_map *map, const char *key);
 void string_map_clear(struct string_map *map);
+void string_map_foreach(struct string_map *map, string_map_iterator_fn iterator, void *data);
 
 #endif
 /* vim: set ts=8 sw=8 noexpandtab: */
